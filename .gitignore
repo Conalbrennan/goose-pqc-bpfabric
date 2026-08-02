@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+*.o
+*.log
+*.csv
+
+active_session.json
+session_key.b64
+*.key
+*.pem
+
+keys/secure_kem/
+results/
