@@ -1,4 +1,4 @@
-#!/use/bin/env python3
+#!/usr/bin/env python3
 
 import argparse
 import base64
@@ -21,6 +21,15 @@ KEM_ALGORITHM = "ML-KEM-768"
 SIGNATURE_ALGORITHM = "ML-DSA-44"
 PROTOCOL_VERSION = 1
 
+GROUP_ID = "GOOSE_GROUP_1"
+KEY_VERSION = 1
+
+AUTHORISED_GROUP_MEMBERS = {
+    "GOOSE_GROUP_1": {
+        "goose-encryption-endpoint",
+    }
+}
+
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9000
 MAX_MESSAGE_SIZE = 5 * 1024 * 1024
@@ -39,8 +48,10 @@ SERVER_SESSION_FILE = SERVER_DIRECTORY / "active_session.json"
 def encode_base64(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
 
-def decode_base64(data: bytes) -> str:
+
+def decode_base64(data: str) -> bytes:
     return base64.b64decode(data.encode("ascii"), validate=True)
+
 
 def canonical_json(data: dict[str, Any]) -> bytes:
     return json.dumps(
@@ -50,6 +61,7 @@ def canonical_json(data: dict[str, Any]) -> bytes:
         ensure_ascii=True,
     ).encode("utf-8")
 
+
 def write_private_file(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -57,6 +69,7 @@ def write_private_file(path: Path, data: bytes) -> None:
         output_file.write(data)
 
     os.chmod(path, 0o644)
+
 
 def write_public_file(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -66,11 +79,13 @@ def write_public_file(path: Path, data: bytes) -> None:
 
     os.chmod(path, 0o644)
 
+
 def read_base64_file(path: Path) -> bytes:
     if not path.exists():
         raise FileNotFoundError(f"Required file not found: {path}")
 
     return decode_base64(path.read_text(encoding="ascii").strip())
+
 
 def send_message(
     connection: socket.socket,
@@ -84,11 +99,12 @@ def send_message(
     connection.sendall(struct.pack("!I", len(encoded_message)))
     connection.sendall(encoded_message)
 
+
 def receive_exact(
     connection: socket.socket,
     required_size: int,
 ) -> bytes:
-    received_data=bytearray()
+    received_data = bytearray()
 
     while len(received_data) < required_size:
         chunk = connection.recv(required_size - len(received_data))
@@ -101,6 +117,7 @@ def receive_exact(
         received_data.extend(chunk)
 
     return bytes(received_data)
+
 
 def receive_message(
     connection: socket.socket,
@@ -119,6 +136,7 @@ def receive_message(
 
     return message
 
+
 def sign_message(
     unsigned_message: dict[str, Any],
     private_key: bytes,
@@ -130,6 +148,7 @@ def sign_message(
         signature = signer.sign(canonical_json(unsigned_message))
 
     return encode_base64(signature)
+
 
 def verify_signed_message(
     signed_message: dict[str, Any],
@@ -153,6 +172,7 @@ def verify_signed_message(
 
     return unsigned_message
 
+
 def derive_session_material(
     shared_secret: bytes,
     transcript_hash: bytes,
@@ -173,6 +193,7 @@ def derive_session_material(
         derived_material[64:68],
     )
 
+
 def create_confirmation(
     confirmation_key: bytes,
     label: bytes,
@@ -183,6 +204,7 @@ def create_confirmation(
         label + transcript_hash,
         hashlib.sha256,
     ).digest()
+
 
 def initialise_identity() -> None:
     if (
@@ -213,6 +235,7 @@ def initialise_identity() -> None:
     print(f"Private key: {SERVER_PRIVATE_KEY_FILE}")
     print(f"Public key: {SERVER_PUBLIC_KEY_FILE}")
 
+
 def run_server(host: str, port: int) -> None:
     server_private_key = read_base64_file(SERVER_PRIVATE_KEY_FILE)
 
@@ -236,6 +259,7 @@ def run_server(host: str, port: int) -> None:
             "kem_algorithm": KEM_ALGORITHM,
             "signature_algorithm": SIGNATURE_ALGORITHM,
             "session_id": session_id,
+            "group_id": GROUP_ID,
             "server_challenge": server_challenge,
             "kem_public_key": encode_base64(kem_public_key),
             "server_identity": "goose-encryption-endpoint",
@@ -247,9 +271,10 @@ def run_server(host: str, port: int) -> None:
             server_private_key,
         )
 
-        print("authenticated ML-KEM server starting")
-        print(f"listening on {host}:{port}")
-        print(f"session IF: {session_id}")
+        print("Authenticated ML-KEM server starting")
+        print(f"Listening on {host}:{port}")
+        print(f"Session ID: {session_id}")
+        print(f"GOOSE group: {GROUP_ID}")
 
         with socket.socket(
             socket.AF_INET,
@@ -270,7 +295,7 @@ def run_server(host: str, port: int) -> None:
                 connection.settimeout(30.0)
 
                 print(
-                    f"client connected from "
+                    f"Client connected from "
                     f"{address[0]}:{address[1]}"
                 )
 
@@ -290,6 +315,8 @@ def run_server(host: str, port: int) -> None:
                     "kem_algorithm",
                     "signature_algorithm",
                     "session_id",
+                    "group_id",
+                    "member_id",
                     "server_challenge",
                     "client_challenge",
                     "kem_ciphertext",
@@ -314,6 +341,34 @@ def run_server(host: str, port: int) -> None:
                 if response["session_id"] != session_id:
                     raise ValueError("Session identifier mismatch")
 
+                if response["group_id"] != GROUP_ID:
+                    raise ValueError(
+                        "Requested GOOSE group is not recognised"
+                    )
+
+                if response["member_id"] != response["client_identity"]:
+                    raise ValueError("Member identity mismatch")
+
+                authorised_members = AUTHORISED_GROUP_MEMBERS.get(
+                    response["group_id"],
+                    set(),
+                )
+
+                if (
+                    response["client_identity"]
+                    not in authorised_members
+                ):
+                    raise ValueError(
+                        f"Client {response['client_identity']} "
+                        f"is not authorised for group "
+                        f"{response['group_id']}"
+                    )
+
+                print(
+                    f"Client authorised for group: "
+                    f"{response['group_id']}"
+                )
+
                 if response["server_challenge"] != server_challenge:
                     raise ValueError("Server challenge mismatch")
 
@@ -331,6 +386,8 @@ def run_server(host: str, port: int) -> None:
                         "kem_algorithm",
                         "signature_algorithm",
                         "session_id",
+                        "group_id",
+                        "member_id",
                         "server_challenge",
                         "client_challenge",
                         "kem_ciphertext",
@@ -370,14 +427,24 @@ def run_server(host: str, port: int) -> None:
                     expected_client_confirmation,
                     received_client_confirmation,
                 ):
-                    raise ValueError("Client key confirmation failed")
+                    raise ValueError(
+                        "Client key confirmation failed"
+                    )
 
-                final_core ={
+                key_id = os.urandom(8).hex()
+
+                final_core = {
                     "type": "KEM_COMPLETE",
                     "status": "ACTIVE",
                     "version": PROTOCOL_VERSION,
                     "session_id": session_id,
-                    "client_challenge": response["client_challenge"],
+                    "group_id": GROUP_ID,
+                    "member_id": response["member_id"],
+                    "key_id": key_id,
+                    "key_version": KEY_VERSION,
+                    "client_challenge": response[
+                        "client_challenge"
+                    ],
                     "server_confirmation": encode_base64(
                         create_confirmation(
                             confirmation_key,
@@ -404,6 +471,10 @@ def run_server(host: str, port: int) -> None:
                     "status": "ACTIVE",
                     "role": "decryption",
                     "session_id": session_id,
+                    "group_id": GROUP_ID,
+                    "member_id": response["member_id"],
+                    "key_id": key_id,
+                    "key_version": KEY_VERSION,
                     "channel_id": 1,
                     "kem_algorithm": KEM_ALGORITHM,
                     "signature_algorithm": SIGNATURE_ALGORITHM,
@@ -429,8 +500,12 @@ def run_server(host: str, port: int) -> None:
                 print("Client key confirmation verified")
                 print("Final server confirmation sent")
                 print(f"Handshake time: {elapsed_ms:.3f} ms")
-                print(f"Session stored at: {SERVER_SESSION_FILE}")
+                print(
+                    f"Session stored at: "
+                    f"{SERVER_SESSION_FILE}"
+                )
                 print("Secure ML-KEM session established")
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -466,8 +541,12 @@ def main() -> int:
         return 130
 
     except Exception as error:
-        print(f"Server error: {error}", file=sys.stderr)
+        print(
+            f"Server error: {error}",
+            file=sys.stderr,
+        )
         return 1
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
