@@ -34,7 +34,7 @@ from kem_key_server import (
 DEFAULT_SERVER_HOST = "127.0.0.1"
 DEFAULT_SERVER_PORT = 9000
 
-MEMBER_ID = "goose-encryption-endpoint"
+MEMBER_ID = "unauthorised-test-device"
 
 BASE_DIRECTORY = Path("/home/student/goose-mininet/keys/secure_kem")
 CLIENT_DIRECTORY = BASE_DIRECTORY / "client"
