@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import argparse
+import hashlib
+import hmac
 import json
 import os
 import socket
@@ -14,6 +16,7 @@ from kem_key_server import (
     KEM_ALGORITHM,
     SIGNATURE_ALGORITHM,
     PROTOCOL_VERSION,
+    GROUP_ID,
     encode_base64,
     decode_base64,
     canonical_json,
@@ -31,6 +34,8 @@ from kem_key_server import (
 DEFAULT_SERVER_HOST = "127.0.0.1"
 DEFAULT_SERVER_PORT = 9000
 
+MEMBER_ID = "goose-encryption-endpoint"
+
 BASE_DIRECTORY = Path("/home/student/goose-mininet/keys/secure_kem")
 CLIENT_DIRECTORY = BASE_DIRECTORY / "client"
 
@@ -42,6 +47,7 @@ TRUSTED_SERVER_PUBLIC_KEY_FILE = (
 )
 
 CLIENT_SESSION_FILE = CLIENT_DIRECTORY / "active_session.json"
+
 
 def initialise_identity() -> None:
     if CLIENT_PRIVATE_KEY_FILE.exists() or CLIENT_PUBLIC_KEY_FILE.exists():
@@ -69,6 +75,7 @@ def initialise_identity() -> None:
     print(f"Private key: {CLIENT_PRIVATE_KEY_FILE}")
     print(f"Public key: {CLIENT_PUBLIC_KEY_FILE}")
 
+
 def run_client(server_host: str, server_port: int) -> None:
     client_private_key = read_base64_file(CLIENT_PRIVATE_KEY_FILE)
 
@@ -83,6 +90,8 @@ def run_client(server_host: str, server_port: int) -> None:
 
     print("Authenticated ML-KEM client starting")
     print(f"Connecting to {server_host}:{server_port}")
+    print(f"Requesting GOOSE group: {GROUP_ID}")
+    print(f"Member identity: {MEMBER_ID}")
 
     with socket.create_connection(
         (server_host, server_port),
@@ -109,8 +118,14 @@ def run_client(server_host: str, server_port: int) -> None:
         if offer["signature_algorithm"] != SIGNATURE_ALGORITHM:
             raise ValueError("Signature algorithm mismatch")
 
+        if offer.get("group_id") != GROUP_ID:
+            raise ValueError(
+                "Server offered an unexpected GOOSE group"
+            )
+
         print("Server identity verified")
         print("Signed ML-KEM public key accepted")
+        print(f"GOOSE group verified: {GROUP_ID}")
 
         kem_public_key = decode_base64(offer["kem_public_key"])
         client_challenge = encode_base64(os.urandom(32))
@@ -126,10 +141,12 @@ def run_client(server_host: str, server_port: int) -> None:
             "kem_algorithm": KEM_ALGORITHM,
             "signature_algorithm": SIGNATURE_ALGORITHM,
             "session_id": offer["session_id"],
+            "group_id": GROUP_ID,
+            "member_id": MEMBER_ID,
             "server_challenge": offer["server_challenge"],
             "client_challenge": client_challenge,
             "kem_ciphertext": encode_base64(kem_ciphertext),
-            "client_identity": "goose-encryption-endpoint",
+            "client_identity": MEMBER_ID,
         }
 
         transcript = {
@@ -137,13 +154,15 @@ def run_client(server_host: str, server_port: int) -> None:
             "response": response_for_transcript,
         }
 
-        import hashlib
-
         transcript_hash = hashlib.sha256(
             canonical_json(transcript)
         ).digest()
 
-        aes_key, confirmation_key, nonce_prefix = derive_session_material(
+        (
+            aes_key,
+            confirmation_key,
+            nonce_prefix,
+        ) = derive_session_material(
             shared_secret,
             transcript_hash,
         )
@@ -183,6 +202,26 @@ def run_client(server_host: str, server_port: int) -> None:
         if final_message["session_id"] != offer["session_id"]:
             raise ValueError("Final session identifier mismatch")
 
+        if final_message.get("group_id") != GROUP_ID:
+            raise ValueError(
+                "Final GOOSE group identifier mismatch"
+            )
+
+        if final_message.get("member_id") != MEMBER_ID:
+            raise ValueError(
+                "Final member identifier mismatch"
+            )
+
+        if "key_id" not in final_message:
+            raise ValueError(
+                "Final message has no key identifier"
+            )
+
+        if "key_version" not in final_message:
+            raise ValueError(
+                "Final message has no key version"
+            )
+
         if final_message["client_challenge"] != client_challenge:
             raise ValueError("Client challenge mismatch")
 
@@ -199,8 +238,6 @@ def run_client(server_host: str, server_port: int) -> None:
             final_message["server_confirmation"]
         )
 
-        import hmac
-
         if not hmac.compare_digest(
             expected_server_confirmation,
             received_server_confirmation,
@@ -215,12 +252,18 @@ def run_client(server_host: str, server_port: int) -> None:
             "status": "ACTIVE",
             "role": "encryption",
             "session_id": offer["session_id"],
+            "group_id": GROUP_ID,
+            "member_id": MEMBER_ID,
+            "key_id": final_message["key_id"],
+            "key_version": final_message["key_version"],
             "channel_id": 1,
             "kem_algorithm": KEM_ALGORITHM,
             "signature_algorithm": SIGNATURE_ALGORITHM,
             "aes_key_b64": encode_base64(aes_key),
             "nonce_prefix_b64": encode_base64(nonce_prefix),
-            "transcript_hash_b64": encode_base64(transcript_hash),
+            "transcript_hash_b64": encode_base64(
+                transcript_hash
+            ),
             "created_unix": time.time(),
             "handshake_ms": round(elapsed_ms, 3),
         }
@@ -235,9 +278,16 @@ def run_client(server_host: str, server_port: int) -> None:
         )
 
         print("Server key confirmation verified")
-        print(f"handshake time: {elapsed_ms:.3f} ms")
-        print(f"session stored at: {CLIENT_SESSION_FILE}")
-        print("Secure ML-KEM session established")
+        print(f"GOOSE group authorised: {GROUP_ID}")
+        print(f"Key ID: {final_message['key_id']}")
+        print(
+            f"Key version: "
+            f"{final_message['key_version']}"
+        )
+        print(f"Handshake time: {elapsed_ms:.3f} ms")
+        print(f"Session stored at: {CLIENT_SESSION_FILE}")
+        print("Secure ML-KEM group session established")
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -276,8 +326,12 @@ def main() -> int:
         return 130
 
     except Exception as error:
-        print(f"Client error {error}", file=sys.stderr)
+        print(
+            f"Client error: {error}",
+            file=sys.stderr,
+        )
         return 1
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
