@@ -26,8 +26,6 @@ IFF_NO_PI = 0x1000
 COUNTER_SIZE = 8
 MAX_COUNTER = (1 << 64) - 1
 
-REPLAY_TEST = True
-
 
 def open_tap(interface_name):
 
@@ -106,7 +104,6 @@ aad = build_aad(session)
 aesgcm = AESGCM(aes_key)
 
 packet_counter = 0
-replay_sent = False
 
 tap_in_fd = open_tap(TAP_IN)
 tap_out_fd = open_tap(TAP_OUT)
@@ -127,7 +124,6 @@ print(
 print(
     f"Key version: {session['key_version']}"
 )
-print("Replay security test enabled")
 
 try:
     while True:
@@ -161,7 +157,10 @@ try:
                 byteorder="big"
             )
 
-            nonce = nonce_prefix + counter_bytes
+            nonce = (
+                nonce_prefix
+                + counter_bytes
+            )
 
             encrypted_payload = aesgcm.encrypt(
                 nonce,
@@ -191,25 +190,9 @@ try:
             print(
                 "Encrypted and forwarded frame, "
                 f"counter={packet_counter}, "
-                f"encrypted length={len(new_payload)} bytes"
+                f"encrypted length="
+                f"{len(new_payload)} bytes"
             )
-
-            if (
-                REPLAY_TEST
-                and packet_counter == 1
-                and not replay_sent
-            ):
-                os.write(
-                    tap_out_fd,
-                    bytes(encrypted_frame)
-                )
-
-                replay_sent = True
-
-                print(
-                    "Replay test: resent encrypted frame, "
-                    "counter=1"
-                )
 
 except KeyboardInterrupt:
     print(
