@@ -358,7 +358,7 @@ def run_server(host: str, port: int) -> None:
                     set(),
                 )
 
-                if response["client identity"] in REVOKED_GROUP_MEMBERS:
+                if response["client_identity"] in REVOKED_GROUP_MEMBERS:
                     raise ValueError(
                         f"Client {response['client_identity']} has been revoked"
                     )
