@@ -26,11 +26,6 @@ IFF_NO_PI = 0x1000
 COUNTER_SIZE = 8
 MAX_COUNTER = (1 << 64) - 1
 
-# Temporary test switch.
-# When enabled, a modified copy of the first
-# encrypted frame is sent before the genuine frame.
-TAMPER_TEST = True
-
 
 def open_tap(interface_name):
 
@@ -129,7 +124,6 @@ print(
 print(
     f"Key version: {session['key_version']}"
 )
-print("AES-GCM tampering security test enabled")
 
 try:
     while True:
@@ -188,51 +182,6 @@ try:
                 / Raw(load=new_payload)
             )
 
-            # Temporary tampering test.
-            # For the first protected frame only,
-            # create a copy and change one bit in
-            # the encrypted ciphertext.
-            #
-            # The first eight bytes contain the
-            # packet counter and are deliberately
-            # left unchanged.
-            if (
-                TAMPER_TEST
-                and packet_counter == 1
-            ):
-
-                tampered_payload = bytearray(
-                    new_payload
-                )
-
-                tampered_payload[
-                    COUNTER_SIZE
-                ] ^= 0x01
-
-                tampered_frame = (
-                    Ether(
-                        src=packet.src,
-                        dst=packet.dst,
-                        type=GOOSE_ETHERTYPE
-                    )
-                    / Raw(
-                        load=bytes(
-                            tampered_payload
-                        )
-                    )
-                )
-
-                os.write(
-                    tap_out_fd,
-                    bytes(tampered_frame)
-                )
-
-                print(
-                    "Tamper test: sent modified "
-                    "encrypted frame, counter=1"
-                )
-
-            # Send the genuine encrypted frame.
             os.write(
                 tap_out_fd,
                 bytes(encrypted_frame)
