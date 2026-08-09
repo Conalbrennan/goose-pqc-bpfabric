@@ -30,9 +30,7 @@ AUTHORISED_GROUP_MEMBERS = {
     }
 }
 
-REVOKED_GROUP_MEMBERS = {
-    "goose-encryption-endpoint",
-}
+REVOKED_GROUP_MEMBERS = set()
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9000
