@@ -30,6 +30,10 @@ AUTHORISED_GROUP_MEMBERS = {
     }
 }
 
+REVOKED_GROUP_MEMBERS = {
+    "goose-encryption-endpoint",
+)
+
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9000
 MAX_MESSAGE_SIZE = 5 * 1024 * 1024
@@ -353,6 +357,11 @@ def run_server(host: str, port: int) -> None:
                     response["group_id"],
                     set(),
                 )
+
+                if response["client identity"] in REVOKED_GROUP_MEMBERS:
+                    raise ValueError(
+                        f"Client {response['client_identity']} has been revoked"
+                    )
 
                 if (
                     response["client_identity"]
