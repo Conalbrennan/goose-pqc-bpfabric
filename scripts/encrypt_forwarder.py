@@ -8,6 +8,7 @@ import fcntl
 import json
 import os
 import struct
+import time
 
 TAP_IN = "tap_enc_in"
 TAP_OUT = "tap_enc_out"
@@ -162,10 +163,23 @@ try:
                 + counter_bytes
             )
 
+            # Measure ONLY the AES-GCM encryption call.
+            encrypt_start_ns = time.perf_counter_ns()
+
             encrypted_payload = aesgcm.encrypt(
                 nonce,
                 original_payload,
                 aad
+            )
+
+            encrypt_end_ns = time.perf_counter_ns()
+
+            encrypt_time_ns = (
+                encrypt_end_ns - encrypt_start_ns
+            )
+
+            encrypt_time_us = (
+                encrypt_time_ns / 1000
             )
 
             new_payload = (
@@ -190,6 +204,8 @@ try:
             print(
                 "Encrypted and forwarded frame, "
                 f"counter={packet_counter}, "
+                f"AES_encrypt={encrypt_time_ns} ns "
+                f"({encrypt_time_us:.3f} us), "
                 f"encrypted length="
                 f"{len(new_payload)} bytes"
             )
