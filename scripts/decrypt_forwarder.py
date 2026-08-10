@@ -9,6 +9,7 @@ import fcntl
 import json
 import os
 import struct
+import time
 
 TAP_IN = "tap_dec_in"
 TAP_OUT = "tap_dec_out"
@@ -193,10 +194,23 @@ try:
             )
 
             try:
+                # Measure ONLY the AES-GCM decryption call.
+                decrypt_start_ns = time.perf_counter_ns()
+
                 decrypted_payload = aesgcm.decrypt(
                     nonce,
                     encrypted_payload,
                     aad
+                )
+
+                decrypt_end_ns = time.perf_counter_ns()
+
+                decrypt_time_ns = (
+                    decrypt_end_ns - decrypt_start_ns
+                )
+
+                decrypt_time_us = (
+                    decrypt_time_ns / 1000
                 )
 
             except InvalidTag:
@@ -235,6 +249,8 @@ try:
             print(
                 "Decrypted and forwarded frame, "
                 f"counter={packet_counter}, "
+                f"AES_decrypt={decrypt_time_ns} ns "
+                f"({decrypt_time_us:.3f} us), "
                 f"payload length="
                 f"{len(decrypted_payload)} bytes"
             )
