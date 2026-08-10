@@ -4,6 +4,7 @@ from scapy.all import Ether, Raw
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 import base64
+import csv
 import fcntl
 import json
 import os
@@ -20,12 +21,20 @@ SESSION_FILE = (
     "secure_kem/client/active_session.json"
 )
 
+RESULTS_FILE = (
+    "/home/student/goose-pqc-bpfabric/results/"
+    "aes_encrypt_times.csv"
+)
+
 TUNSETIFF = 0x400454CA
 IFF_TAP = 0x0002
 IFF_NO_PI = 0x1000
 
 COUNTER_SIZE = 8
 MAX_COUNTER = (1 << 64) - 1
+
+# Store measurements in memory during the experiment.
+encryption_timings = []
 
 
 def open_tap(interface_name):
@@ -72,6 +81,49 @@ def build_aad(session):
         sort_keys=True,
         separators=(",", ":")
     ).encode("utf-8")
+
+
+def save_results():
+
+    os.makedirs(
+        os.path.dirname(RESULTS_FILE),
+        exist_ok=True
+    )
+
+    with open(
+        RESULTS_FILE,
+        "w",
+        newline=""
+    ) as csvfile:
+
+        writer = csv.writer(csvfile)
+
+        writer.writerow(
+            [
+                "packet_counter",
+                "encrypt_time_ns",
+                "encrypt_time_us"
+            ]
+        )
+
+        for (
+            counter,
+            encrypt_time_ns,
+            encrypt_time_us
+        ) in encryption_timings:
+
+            writer.writerow(
+                [
+                    counter,
+                    encrypt_time_ns,
+                    encrypt_time_us
+                ]
+            )
+
+    print(
+        f"Encryption timing results saved to "
+        f"{RESULTS_FILE}"
+    )
 
 
 with open(SESSION_FILE, "r") as session_file:
@@ -125,6 +177,10 @@ print(
 print(
     f"Key version: {session['key_version']}"
 )
+print(
+    f"Timing results will be saved to "
+    f"{RESULTS_FILE}"
+)
 
 try:
     while True:
@@ -163,7 +219,7 @@ try:
                 + counter_bytes
             )
 
-            # Measure ONLY the AES-GCM encryption call.
+            # Measure ONLY AES-GCM encryption.
             encrypt_start_ns = time.perf_counter_ns()
 
             encrypted_payload = aesgcm.encrypt(
@@ -175,11 +231,20 @@ try:
             encrypt_end_ns = time.perf_counter_ns()
 
             encrypt_time_ns = (
-                encrypt_end_ns - encrypt_start_ns
+                encrypt_end_ns
+                - encrypt_start_ns
             )
 
             encrypt_time_us = (
-                encrypt_time_ns / 1000
+                encrypt_time_ns / 1000.0
+            )
+
+            encryption_timings.append(
+                (
+                    packet_counter,
+                    encrypt_time_ns,
+                    encrypt_time_us
+                )
             )
 
             new_payload = (
@@ -201,14 +266,18 @@ try:
                 bytes(encrypted_frame)
             )
 
-            print(
-                "Encrypted and forwarded frame, "
-                f"counter={packet_counter}, "
-                f"AES_encrypt={encrypt_time_ns} ns "
-                f"({encrypt_time_us:.3f} us), "
-                f"encrypted length="
-                f"{len(new_payload)} bytes"
-            )
+            # Limit terminal output during large tests.
+            if (
+                packet_counter <= 5
+                or packet_counter % 100 == 0
+            ):
+                print(
+                    "Encrypted frame, "
+                    f"counter={packet_counter}, "
+                    f"AES_encrypt="
+                    f"{encrypt_time_ns} ns "
+                    f"({encrypt_time_us:.3f} us)"
+                )
 
 except KeyboardInterrupt:
     print(
@@ -216,5 +285,9 @@ except KeyboardInterrupt:
     )
 
 finally:
+
+    if encryption_timings:
+        save_results()
+
     os.close(tap_in_fd)
     os.close(tap_out_fd)
