@@ -5,6 +5,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.exceptions import InvalidTag
 
 import base64
+import csv
 import fcntl
 import json
 import os
@@ -21,12 +22,20 @@ SESSION_FILE = (
     "secure_kem/Server/active_session.json"
 )
 
+RESULTS_FILE = (
+    "/home/student/goose-pqc-bpfabric/results/"
+    "aes_decrypt_times.csv"
+)
+
 TUNSETIFF = 0x400454CA
 IFF_TAP = 0x0002
 IFF_NO_PI = 0x1000
 
 COUNTER_SIZE = 8
 GCM_TAG_SIZE = 16
+
+# Store measurements in memory during the experiment.
+decryption_timings = []
 
 
 def open_tap(interface_name):
@@ -75,6 +84,49 @@ def build_aad(session):
     ).encode("utf-8")
 
 
+def save_results():
+
+    os.makedirs(
+        os.path.dirname(RESULTS_FILE),
+        exist_ok=True
+    )
+
+    with open(
+        RESULTS_FILE,
+        "w",
+        newline=""
+    ) as csvfile:
+
+        writer = csv.writer(csvfile)
+
+        writer.writerow(
+            [
+                "packet_counter",
+                "decrypt_time_ns",
+                "decrypt_time_us"
+            ]
+        )
+
+        for (
+            counter,
+            decrypt_time_ns,
+            decrypt_time_us
+        ) in decryption_timings:
+
+            writer.writerow(
+                [
+                    counter,
+                    decrypt_time_ns,
+                    decrypt_time_us
+                ]
+            )
+
+    print(
+        f"Decryption timing results saved to "
+        f"{RESULTS_FILE}"
+    )
+
+
 with open(SESSION_FILE, "r") as session_file:
     session = json.load(session_file)
 
@@ -105,8 +157,8 @@ aad = build_aad(session)
 
 aesgcm = AESGCM(aes_key)
 
-# Counters are added only after a frame has
-# successfully authenticated and decrypted.
+# Counter is marked as used only after
+# successful authentication/decryption.
 seen_counters = set()
 
 tap_in_fd = open_tap(TAP_IN)
@@ -127,6 +179,10 @@ print(
 )
 print(
     f"Key version: {session['key_version']}"
+)
+print(
+    f"Timing results will be saved to "
+    f"{RESULTS_FILE}"
 )
 
 try:
@@ -194,7 +250,8 @@ try:
             )
 
             try:
-                # Measure ONLY the AES-GCM decryption call.
+
+                # Measure ONLY AES-GCM decryption.
                 decrypt_start_ns = time.perf_counter_ns()
 
                 decrypted_payload = aesgcm.decrypt(
@@ -206,11 +263,12 @@ try:
                 decrypt_end_ns = time.perf_counter_ns()
 
                 decrypt_time_ns = (
-                    decrypt_end_ns - decrypt_start_ns
+                    decrypt_end_ns
+                    - decrypt_start_ns
                 )
 
                 decrypt_time_us = (
-                    decrypt_time_ns / 1000
+                    decrypt_time_ns / 1000.0
                 )
 
             except InvalidTag:
@@ -226,8 +284,16 @@ try:
                 )
                 continue
 
-            # Only mark the counter as used once
-            # authentication has succeeded.
+            decryption_timings.append(
+                (
+                    packet_counter,
+                    decrypt_time_ns,
+                    decrypt_time_us
+                )
+            )
+
+            # Mark counter used only after
+            # successful authentication.
             seen_counters.add(
                 packet_counter
             )
@@ -246,14 +312,18 @@ try:
                 bytes(decrypted_frame)
             )
 
-            print(
-                "Decrypted and forwarded frame, "
-                f"counter={packet_counter}, "
-                f"AES_decrypt={decrypt_time_ns} ns "
-                f"({decrypt_time_us:.3f} us), "
-                f"payload length="
-                f"{len(decrypted_payload)} bytes"
-            )
+            # Limit terminal output during large tests.
+            if (
+                packet_counter <= 5
+                or packet_counter % 100 == 0
+            ):
+                print(
+                    "Decrypted frame, "
+                    f"counter={packet_counter}, "
+                    f"AES_decrypt="
+                    f"{decrypt_time_ns} ns "
+                    f"({decrypt_time_us:.3f} us)"
+                )
 
 except KeyboardInterrupt:
     print(
@@ -261,5 +331,9 @@ except KeyboardInterrupt:
     )
 
 finally:
+
+    if decryption_timings:
+        save_results()
+
     os.close(tap_in_fd)
     os.close(tap_out_fd)
