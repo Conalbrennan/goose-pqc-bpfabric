@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-from scapy.all import Ether, Raw
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.exceptions import InvalidTag
 
@@ -31,6 +30,7 @@ TUNSETIFF = 0x400454CA
 IFF_TAP = 0x0002
 IFF_NO_PI = 0x1000
 
+ETHERNET_HEADER_SIZE = 14
 COUNTER_SIZE = 8
 GCM_TAG_SIZE = 16
 
@@ -55,6 +55,17 @@ def open_tap(interface_name):
     )
 
     return tap_fd
+
+
+def get_ethertype(frame_data):
+
+    if len(frame_data) < ETHERNET_HEADER_SIZE:
+        return None
+
+    return struct.unpack(
+        "!H",
+        frame_data[12:14]
+    )[0]
 
 
 def build_aad(session):
@@ -184,6 +195,10 @@ print(
     f"Timing results will be saved to "
     f"{RESULTS_FILE}"
 )
+print(
+    "Raw-byte forwarding enabled "
+    "(Scapy removed from packet path)"
+)
 
 try:
     while True:
@@ -193,137 +208,149 @@ try:
             65535
         )
 
-        packet = Ether(frame_data)
+        # Ignore malformed Ethernet frames.
+        if len(frame_data) < ETHERNET_HEADER_SIZE:
+            continue
 
+        ethertype = get_ethertype(frame_data)
+
+        if ethertype != GOOSE_ETHERTYPE:
+            continue
+
+        # Preserve the original Ethernet header exactly.
+        ethernet_header = (
+            frame_data[:ETHERNET_HEADER_SIZE]
+        )
+
+        # The encrypted body contains:
+        #
+        # 8-byte counter
+        # +
+        # AES-GCM ciphertext
+        # +
+        # 16-byte authentication tag
+        encrypted_blob = (
+            frame_data[ETHERNET_HEADER_SIZE:]
+        )
+
+        minimum_length = (
+            COUNTER_SIZE
+            + GCM_TAG_SIZE
+            + 1
+        )
+
+        if len(encrypted_blob) < minimum_length:
+            print(
+                "Rejected encrypted frame: "
+                "payload too short"
+            )
+            continue
+
+        counter_bytes = (
+            encrypted_blob[:COUNTER_SIZE]
+        )
+
+        encrypted_payload = (
+            encrypted_blob[COUNTER_SIZE:]
+        )
+
+        packet_counter = int.from_bytes(
+            counter_bytes,
+            byteorder="big"
+        )
+
+        if packet_counter == 0:
+            print(
+                "Rejected encrypted frame: "
+                "invalid packet counter"
+            )
+            continue
+
+        if packet_counter in seen_counters:
+            print(
+                "Rejected replayed frame: "
+                f"counter={packet_counter}"
+            )
+            continue
+
+        nonce = (
+            nonce_prefix
+            + counter_bytes
+        )
+
+        try:
+
+            # Measure ONLY AES-GCM decryption.
+            decrypt_start_ns = time.perf_counter_ns()
+
+            decrypted_payload = aesgcm.decrypt(
+                nonce,
+                encrypted_payload,
+                aad
+            )
+
+            decrypt_end_ns = time.perf_counter_ns()
+
+            decrypt_time_ns = (
+                decrypt_end_ns
+                - decrypt_start_ns
+            )
+
+            decrypt_time_us = (
+                decrypt_time_ns / 1000.0
+            )
+
+        except InvalidTag:
+            print(
+                "Rejected encrypted frame: "
+                "AES-GCM authentication failed"
+            )
+            continue
+
+        except Exception as error:
+            print(
+                f"Decryption failed: {error}"
+            )
+            continue
+
+        decryption_timings.append(
+            (
+                packet_counter,
+                decrypt_time_ns,
+                decrypt_time_us
+            )
+        )
+
+        # Mark counter used only after
+        # successful authentication.
+        seen_counters.add(
+            packet_counter
+        )
+
+        # Restore the original Ethernet frame directly.
+        # No Scapy packet reconstruction is performed.
+        decrypted_frame = (
+            ethernet_header
+            + decrypted_payload
+        )
+
+        os.write(
+            tap_out_fd,
+            decrypted_frame
+        )
+
+        # Limit terminal output during large tests.
         if (
-            packet.type == GOOSE_ETHERTYPE
-            and Raw in packet
+            packet_counter <= 5
+            or packet_counter % 100 == 0
         ):
-
-            encrypted_blob = bytes(
-                packet[Raw].load
+            print(
+                "Decrypted frame, "
+                f"counter={packet_counter}, "
+                f"AES_decrypt="
+                f"{decrypt_time_ns} ns "
+                f"({decrypt_time_us:.3f} us)"
             )
-
-            minimum_length = (
-                COUNTER_SIZE
-                + GCM_TAG_SIZE
-                + 1
-            )
-
-            if len(encrypted_blob) < minimum_length:
-                print(
-                    "Rejected encrypted frame: "
-                    "payload too short"
-                )
-                continue
-
-            counter_bytes = (
-                encrypted_blob[:COUNTER_SIZE]
-            )
-
-            encrypted_payload = (
-                encrypted_blob[COUNTER_SIZE:]
-            )
-
-            packet_counter = int.from_bytes(
-                counter_bytes,
-                byteorder="big"
-            )
-
-            if packet_counter == 0:
-                print(
-                    "Rejected encrypted frame: "
-                    "invalid packet counter"
-                )
-                continue
-
-            if packet_counter in seen_counters:
-                print(
-                    "Rejected replayed frame: "
-                    f"counter={packet_counter}"
-                )
-                continue
-
-            nonce = (
-                nonce_prefix
-                + counter_bytes
-            )
-
-            try:
-
-                # Measure ONLY AES-GCM decryption.
-                decrypt_start_ns = time.perf_counter_ns()
-
-                decrypted_payload = aesgcm.decrypt(
-                    nonce,
-                    encrypted_payload,
-                    aad
-                )
-
-                decrypt_end_ns = time.perf_counter_ns()
-
-                decrypt_time_ns = (
-                    decrypt_end_ns
-                    - decrypt_start_ns
-                )
-
-                decrypt_time_us = (
-                    decrypt_time_ns / 1000.0
-                )
-
-            except InvalidTag:
-                print(
-                    "Rejected encrypted frame: "
-                    "AES-GCM authentication failed"
-                )
-                continue
-
-            except Exception as error:
-                print(
-                    f"Decryption failed: {error}"
-                )
-                continue
-
-            decryption_timings.append(
-                (
-                    packet_counter,
-                    decrypt_time_ns,
-                    decrypt_time_us
-                )
-            )
-
-            # Mark counter used only after
-            # successful authentication.
-            seen_counters.add(
-                packet_counter
-            )
-
-            decrypted_frame = (
-                Ether(
-                    src=packet.src,
-                    dst=packet.dst,
-                    type=GOOSE_ETHERTYPE
-                )
-                / Raw(load=decrypted_payload)
-            )
-
-            os.write(
-                tap_out_fd,
-                bytes(decrypted_frame)
-            )
-
-            # Limit terminal output during large tests.
-            if (
-                packet_counter <= 5
-                or packet_counter % 100 == 0
-            ):
-                print(
-                    "Decrypted frame, "
-                    f"counter={packet_counter}, "
-                    f"AES_decrypt="
-                    f"{decrypt_time_ns} ns "
-                    f"({decrypt_time_us:.3f} us)"
-                )
 
 except KeyboardInterrupt:
     print(
