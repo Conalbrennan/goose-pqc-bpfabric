@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-from scapy.all import Ether, Raw
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 import base64
@@ -30,6 +29,7 @@ TUNSETIFF = 0x400454CA
 IFF_TAP = 0x0002
 IFF_NO_PI = 0x1000
 
+ETHERNET_HEADER_SIZE = 14
 COUNTER_SIZE = 8
 MAX_COUNTER = (1 << 64) - 1
 
@@ -54,6 +54,17 @@ def open_tap(interface_name):
     )
 
     return tap_fd
+
+
+def get_ethertype(frame_data):
+
+    if len(frame_data) < ETHERNET_HEADER_SIZE:
+        return None
+
+    return struct.unpack(
+        "!H",
+        frame_data[12:14]
+    )[0]
 
 
 def build_aad(session):
@@ -181,6 +192,10 @@ print(
     f"Timing results will be saved to "
     f"{RESULTS_FILE}"
 )
+print(
+    "Raw-byte forwarding enabled "
+    "(Scapy removed from packet path)"
+)
 
 try:
     while True:
@@ -190,94 +205,101 @@ try:
             65535
         )
 
-        packet = Ether(frame_data)
+        # Ignore malformed Ethernet frames.
+        if len(frame_data) < ETHERNET_HEADER_SIZE:
+            continue
 
+        ethertype = get_ethertype(frame_data)
+
+        if ethertype != GOOSE_ETHERTYPE:
+            continue
+
+        # Preserve the original Ethernet header exactly.
+        ethernet_header = (
+            frame_data[:ETHERNET_HEADER_SIZE]
+        )
+
+        # Everything after the Ethernet header is
+        # the original GOOSE payload.
+        original_payload = (
+            frame_data[ETHERNET_HEADER_SIZE:]
+        )
+
+        if not original_payload:
+            continue
+
+        if packet_counter >= MAX_COUNTER:
+            raise RuntimeError(
+                "Packet counter exhausted; "
+                "rekey required"
+            )
+
+        packet_counter += 1
+
+        counter_bytes = packet_counter.to_bytes(
+            COUNTER_SIZE,
+            byteorder="big"
+        )
+
+        nonce = (
+            nonce_prefix
+            + counter_bytes
+        )
+
+        # Measure ONLY AES-GCM encryption.
+        encrypt_start_ns = time.perf_counter_ns()
+
+        encrypted_payload = aesgcm.encrypt(
+            nonce,
+            original_payload,
+            aad
+        )
+
+        encrypt_end_ns = time.perf_counter_ns()
+
+        encrypt_time_ns = (
+            encrypt_end_ns
+            - encrypt_start_ns
+        )
+
+        encrypt_time_us = (
+            encrypt_time_ns / 1000.0
+        )
+
+        encryption_timings.append(
+            (
+                packet_counter,
+                encrypt_time_ns,
+                encrypt_time_us
+            )
+        )
+
+        # Construct the outgoing frame directly
+        # from raw bytes. No Scapy packet object
+        # is created or serialised.
+        encrypted_frame = (
+            ethernet_header
+            + counter_bytes
+            + encrypted_payload
+        )
+
+        os.write(
+            tap_out_fd,
+            encrypted_frame
+        )
+
+        # Limit terminal output during large tests.
         if (
-            packet.type == GOOSE_ETHERTYPE
-            and Raw in packet
+            packet_counter <= 5
+            or packet_counter % 100 == 0
         ):
-
-            original_payload = bytes(
-                packet[Raw].load
+            print(
+                "Encrypted frame, "
+                f"counter={packet_counter}, "
+                f"AES_encrypt="
+                f"{encrypt_time_ns} ns "
+                f"({encrypt_time_us:.3f} us)"
             )
-
-            if packet_counter >= MAX_COUNTER:
-                raise RuntimeError(
-                    "Packet counter exhausted; "
-                    "rekey required"
-                )
-
-            packet_counter += 1
-
-            counter_bytes = packet_counter.to_bytes(
-                COUNTER_SIZE,
-                byteorder="big"
-            )
-
-            nonce = (
-                nonce_prefix
-                + counter_bytes
-            )
-
-            # Measure ONLY AES-GCM encryption.
-            encrypt_start_ns = time.perf_counter_ns()
-
-            encrypted_payload = aesgcm.encrypt(
-                nonce,
-                original_payload,
-                aad
-            )
-
-            encrypt_end_ns = time.perf_counter_ns()
-
-            encrypt_time_ns = (
-                encrypt_end_ns
-                - encrypt_start_ns
-            )
-
-            encrypt_time_us = (
-                encrypt_time_ns / 1000.0
-            )
-
-            encryption_timings.append(
-                (
-                    packet_counter,
-                    encrypt_time_ns,
-                    encrypt_time_us
-                )
-            )
-
-            new_payload = (
-                counter_bytes
-                + encrypted_payload
-            )
-
-            encrypted_frame = (
-                Ether(
-                    src=packet.src,
-                    dst=packet.dst,
-                    type=GOOSE_ETHERTYPE
-                )
-                / Raw(load=new_payload)
-            )
-
-            os.write(
-                tap_out_fd,
-                bytes(encrypted_frame)
-            )
-
-            # Limit terminal output during large tests.
-            if (
-                packet_counter <= 5
-                or packet_counter % 100 == 0
-            ):
-                print(
-                    "Encrypted frame, "
-                    f"counter={packet_counter}, "
-                    f"AES_encrypt="
-                    f"{encrypt_time_ns} ns "
-                    f"({encrypt_time_us:.3f} us)"
-                )
 
 except KeyboardInterrupt:
     print(
