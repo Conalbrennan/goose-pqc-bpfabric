@@ -142,12 +142,20 @@ def receive_message(
 def sign_message(
     unsigned_message: dict[str, Any],
     private_key: bytes,
+    signer=None,
 ) -> str:
-    with oqs.Signature(
-        SIGNATURE_ALGORITHM,
-        private_key,
-    ) as signer:
+    # OPTIMISATION:
+    # Reuse an existing Signature object when supplied.
+    if signer is not None:
         signature = signer.sign(canonical_json(unsigned_message))
+    else:
+        with oqs.Signature(
+            SIGNATURE_ALGORITHM,
+            private_key,
+        ) as temporary_signer:
+            signature = temporary_signer.sign(
+                canonical_json(unsigned_message)
+            )
 
     return encode_base64(signature)
 
@@ -155,6 +163,7 @@ def sign_message(
 def verify_signed_message(
     signed_message: dict[str, Any],
     trusted_public_key: bytes,
+    verifier=None,
 ) -> dict[str, Any]:
     if "signature" not in signed_message:
         raise ValueError("Incoming message has no signature")
@@ -162,12 +171,21 @@ def verify_signed_message(
     unsigned_message = dict(signed_message)
     signature = decode_base64(unsigned_message.pop("signature"))
 
-    with oqs.Signature(SIGNATURE_ALGORITHM) as verifier:
+    # OPTIMISATION:
+    # Reuse an existing Signature object when supplied.
+    if verifier is not None:
         valid = verifier.verify(
             canonical_json(unsigned_message),
             signature,
             trusted_public_key,
         )
+    else:
+        with oqs.Signature(SIGNATURE_ALGORITHM) as temporary_verifier:
+            valid = temporary_verifier.verify(
+                canonical_json(unsigned_message),
+                signature,
+                trusted_public_key,
+            )
 
     if not valid:
         raise ValueError("Client ML-DSA signature verification failed")
@@ -251,6 +269,17 @@ def run_server(host: str, port: int) -> None:
     session_id = os.urandom(16).hex()
     server_challenge = encode_base64(os.urandom(32))
 
+    # OPTIMISATION:
+    # Create ML-DSA contexts before the online handshake.
+    server_signer = oqs.Signature(
+        SIGNATURE_ALGORITHM,
+        server_private_key,
+    )
+
+    client_verifier = oqs.Signature(
+        SIGNATURE_ALGORITHM
+    )
+
     # TIMING: ML-KEM key generation
     keygen_start_ns = time.perf_counter_ns()
 
@@ -280,6 +309,7 @@ def run_server(host: str, port: int) -> None:
         signed_offer["signature"] = sign_message(
             offer_core,
             server_private_key,
+            server_signer,
         )
 
         sign_offer_ms = (
@@ -334,6 +364,7 @@ def run_server(host: str, port: int) -> None:
                 response = verify_signed_message(
                     signed_response,
                     trusted_client_public_key,
+                    client_verifier,
                 )
                 verify_client_ms = (
                     time.perf_counter_ns() - verify_start_ns
@@ -521,6 +552,7 @@ def run_server(host: str, port: int) -> None:
                 signed_final["signature"] = sign_message(
                     final_core,
                     server_private_key,
+                    server_signer,
                 )
 
                 sign_final_ms = (
@@ -604,6 +636,10 @@ def run_server(host: str, port: int) -> None:
                     f"{SERVER_SESSION_FILE}"
                 )
                 print("Secure ML-KEM session established")
+
+    # Explicitly release the two pre-created signature contexts.
+    server_signer.free()
+    client_verifier.free()
 
 
 def main() -> int:
