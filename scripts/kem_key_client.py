@@ -86,25 +86,44 @@ def run_client(server_host: str, server_port: int) -> None:
     if CLIENT_SESSION_FILE.exists():
         CLIENT_SESSION_FILE.unlink()
 
-    start_time_ns = time.perf_counter_ns()
-
     print("Authenticated ML-KEM client starting")
     print(f"Connecting to {server_host}:{server_port}")
     print(f"Requesting GOOSE group: {GROUP_ID}")
     print(f"Member identity: {MEMBER_ID}")
 
+    # TIMING: overall handshake begins immediately
+    # before attempting the TCP connection.
+    handshake_start_ns = time.perf_counter_ns()
+
+    connect_start_ns = time.perf_counter_ns()
+
     with socket.create_connection(
         (server_host, server_port),
         timeout=30.0
     ) as connection:
+
+        connect_ms = (
+            time.perf_counter_ns() - connect_start_ns
+        ) / 1_000_000
+
         connection.settimeout(30.0)
 
+        receive_offer_start_ns = time.perf_counter_ns()
         signed_offer = receive_message(connection)
+        receive_offer_ms = (
+            time.perf_counter_ns() - receive_offer_start_ns
+        ) / 1_000_000
+
+        verify_offer_start_ns = time.perf_counter_ns()
 
         offer = verify_signed_message(
             signed_offer,
             trusted_server_public_key,
         )
+
+        verify_offer_ms = (
+            time.perf_counter_ns() - verify_offer_start_ns
+        ) / 1_000_000
 
         if offer["type"] != "KEM_OFFER":
             raise ValueError("Unexpected server message type")
@@ -130,10 +149,19 @@ def run_client(server_host: str, server_port: int) -> None:
         kem_public_key = decode_base64(offer["kem_public_key"])
         client_challenge = encode_base64(os.urandom(32))
 
+        # TIMING: ML-KEM encapsulation
+        encap_start_ns = time.perf_counter_ns()
+
         with oqs.KeyEncapsulation(KEM_ALGORITHM) as kem:
             kem_ciphertext, shared_secret = kem.encap_secret(
                 kem_public_key
             )
+
+        encap_ms = (
+            time.perf_counter_ns() - encap_start_ns
+        ) / 1_000_000
+
+        transcript_start_ns = time.perf_counter_ns()
 
         response_for_transcript = {
             "type": "KEM_RESPONSE",
@@ -158,6 +186,13 @@ def run_client(server_host: str, server_port: int) -> None:
             canonical_json(transcript)
         ).digest()
 
+        transcript_ms = (
+            time.perf_counter_ns() - transcript_start_ns
+        ) / 1_000_000
+
+        # TIMING: HKDF
+        hkdf_start_ns = time.perf_counter_ns()
+
         (
             aes_key,
             confirmation_key,
@@ -166,6 +201,12 @@ def run_client(server_host: str, server_port: int) -> None:
             shared_secret,
             transcript_hash,
         )
+
+        hkdf_ms = (
+            time.perf_counter_ns() - hkdf_start_ns
+        ) / 1_000_000
+
+        confirmation_start_ns = time.perf_counter_ns()
 
         response = dict(response_for_transcript)
 
@@ -177,6 +218,13 @@ def run_client(server_host: str, server_port: int) -> None:
             )
         )
 
+        client_confirmation_ms = (
+            time.perf_counter_ns() - confirmation_start_ns
+        ) / 1_000_000
+
+        # TIMING: ML-DSA client response signing
+        sign_start_ns = time.perf_counter_ns()
+
         signed_response = dict(response)
 
         signed_response["signature"] = sign_message(
@@ -184,17 +232,35 @@ def run_client(server_host: str, server_port: int) -> None:
             client_private_key,
         )
 
+        sign_response_ms = (
+            time.perf_counter_ns() - sign_start_ns
+        ) / 1_000_000
+
+        send_response_start_ns = time.perf_counter_ns()
         send_message(connection, signed_response)
+        send_response_ms = (
+            time.perf_counter_ns() - send_response_start_ns
+        ) / 1_000_000
 
         print("ML-KEM encapsulation completed")
         print("Signed KEM ciphertext sent")
 
+        receive_final_start_ns = time.perf_counter_ns()
         signed_final = receive_message(connection)
+        receive_final_ms = (
+            time.perf_counter_ns() - receive_final_start_ns
+        ) / 1_000_000
+
+        verify_final_start_ns = time.perf_counter_ns()
 
         final_message = verify_signed_message(
             signed_final,
             trusted_server_public_key,
         )
+
+        verify_final_ms = (
+            time.perf_counter_ns() - verify_final_start_ns
+        ) / 1_000_000
 
         if final_message["type"] != "KEM_COMPLETE":
             raise ValueError("Unexpected final message type")
@@ -228,6 +294,8 @@ def run_client(server_host: str, server_port: int) -> None:
         if final_message["status"] != "ACTIVE":
             raise ValueError("Server did not activate the session")
 
+        server_confirmation_start_ns = time.perf_counter_ns()
+
         expected_server_confirmation = create_confirmation(
             confirmation_key,
             b"server-confirmation",
@@ -244,8 +312,12 @@ def run_client(server_host: str, server_port: int) -> None:
         ):
             raise ValueError("Server key confirmation failed")
 
-        elapsed_ms = (
-            time.perf_counter_ns() - start_time_ns
+        server_confirmation_ms = (
+            time.perf_counter_ns() - server_confirmation_start_ns
+        ) / 1_000_000
+
+        handshake_ms = (
+            time.perf_counter_ns() - handshake_start_ns
         ) / 1_000_000
 
         session_record = {
@@ -265,7 +337,7 @@ def run_client(server_host: str, server_port: int) -> None:
                 transcript_hash
             ),
             "created_unix": time.time(),
-            "handshake_ms": round(elapsed_ms, 3),
+            "handshake_ms": round(handshake_ms, 3),
         }
 
         write_private_file(
@@ -284,7 +356,46 @@ def run_client(server_host: str, server_port: int) -> None:
             f"Key version: "
             f"{final_message['key_version']}"
         )
-        print(f"Handshake time: {elapsed_ms:.3f} ms")
+
+        print("\n--- CLIENT TIMINGS ---")
+        print(f"TCP connection: {connect_ms:.3f} ms")
+        print(f"Receive server offer: {receive_offer_ms:.3f} ms")
+        print(
+            f"Verify server ML-DSA signature: "
+            f"{verify_offer_ms:.3f} ms"
+        )
+        print(f"ML-KEM encapsulation: {encap_ms:.3f} ms")
+        print(f"Transcript processing: {transcript_ms:.3f} ms")
+        print(f"HKDF: {hkdf_ms:.3f} ms")
+        print(
+            f"Client confirmation: "
+            f"{client_confirmation_ms:.3f} ms"
+        )
+        print(
+            f"ML-DSA client response signing: "
+            f"{sign_response_ms:.3f} ms"
+        )
+        print(
+            f"Send client response: "
+            f"{send_response_ms:.3f} ms"
+        )
+        print(
+            f"Wait/receive final message: "
+            f"{receive_final_ms:.3f} ms"
+        )
+        print(
+            f"Verify final ML-DSA signature: "
+            f"{verify_final_ms:.3f} ms"
+        )
+        print(
+            f"Server confirmation: "
+            f"{server_confirmation_ms:.3f} ms"
+        )
+        print(
+            f"CLIENT HANDSHAKE TOTAL: "
+            f"{handshake_ms:.3f} ms"
+        )
+
         print(f"Session stored at: {CLIENT_SESSION_FILE}")
         print("Secure ML-KEM group session established")
 
