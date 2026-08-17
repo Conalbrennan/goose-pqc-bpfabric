@@ -144,8 +144,6 @@ def sign_message(
     private_key: bytes,
     signer=None,
 ) -> str:
-    # OPTIMISATION:
-    # Reuse an existing Signature object when supplied.
     if signer is not None:
         signature = signer.sign(canonical_json(unsigned_message))
     else:
@@ -171,8 +169,6 @@ def verify_signed_message(
     unsigned_message = dict(signed_message)
     signature = decode_base64(unsigned_message.pop("signature"))
 
-    # OPTIMISATION:
-    # Reuse an existing Signature object when supplied.
     if verifier is not None:
         valid = verifier.verify(
             canonical_json(unsigned_message),
@@ -269,8 +265,6 @@ def run_server(host: str, port: int) -> None:
     session_id = os.urandom(16).hex()
     server_challenge = encode_base64(os.urandom(32))
 
-    # OPTIMISATION:
-    # Create ML-DSA contexts before the online handshake.
     server_signer = oqs.Signature(
         SIGNATURE_ALGORITHM,
         server_private_key,
@@ -278,6 +272,12 @@ def run_server(host: str, port: int) -> None:
 
     client_verifier = oqs.Signature(
         SIGNATURE_ALGORITHM
+    )
+
+    # HKDF WARM-UP
+    derive_session_material(
+        os.urandom(32),
+        os.urandom(32),
     )
 
     # TIMING: ML-KEM key generation
@@ -302,7 +302,6 @@ def run_server(host: str, port: int) -> None:
             "server_identity": "goose-encryption-endpoint",
         }
 
-        # TIMING: ML-DSA offer signing
         sign_offer_start_ns = time.perf_counter_ns()
 
         signed_offer = dict(offer_core)
@@ -336,8 +335,6 @@ def run_server(host: str, port: int) -> None:
 
             connection, address = listener.accept()
 
-            # TIMING: genuine online handshake begins
-            # only AFTER the client has connected.
             handshake_start_ns = time.perf_counter_ns()
 
             with connection:
@@ -442,7 +439,6 @@ def run_server(host: str, port: int) -> None:
                     response["kem_ciphertext"]
                 )
 
-                # TIMING: ML-KEM decapsulation
                 decap_start_ns = time.perf_counter_ns()
                 shared_secret = kem.decap_secret(kem_ciphertext)
                 decap_ms = (
@@ -481,7 +477,6 @@ def run_server(host: str, port: int) -> None:
                     time.perf_counter_ns() - transcript_start_ns
                 ) / 1_000_000
 
-                # TIMING: HKDF
                 hkdf_start_ns = time.perf_counter_ns()
 
                 (
@@ -545,7 +540,6 @@ def run_server(host: str, port: int) -> None:
                     "Status": "SUCCESS",
                 }
 
-                # TIMING: final ML-DSA signing
                 sign_final_start_ns = time.perf_counter_ns()
 
                 signed_final = dict(final_core)
@@ -637,7 +631,6 @@ def run_server(host: str, port: int) -> None:
                 )
                 print("Secure ML-KEM session established")
 
-    # Explicitly release the two pre-created signature contexts.
     server_signer.free()
     client_verifier.free()
 
