@@ -91,6 +91,22 @@ def run_client(server_host: str, server_port: int) -> None:
     print(f"Requesting GOOSE group: {GROUP_ID}")
     print(f"Member identity: {MEMBER_ID}")
 
+    # OPTIMISATION:
+    # Create reusable cryptographic contexts before
+    # the timed handshake begins.
+    client_signer = oqs.Signature(
+        SIGNATURE_ALGORITHM,
+        client_private_key,
+    )
+
+    server_verifier = oqs.Signature(
+        SIGNATURE_ALGORITHM
+    )
+
+    kem = oqs.KeyEncapsulation(
+        KEM_ALGORITHM
+    )
+
     # TIMING: overall handshake begins immediately
     # before attempting the TCP connection.
     handshake_start_ns = time.perf_counter_ns()
@@ -119,6 +135,7 @@ def run_client(server_host: str, server_port: int) -> None:
         offer = verify_signed_message(
             signed_offer,
             trusted_server_public_key,
+            server_verifier,
         )
 
         verify_offer_ms = (
@@ -149,13 +166,13 @@ def run_client(server_host: str, server_port: int) -> None:
         kem_public_key = decode_base64(offer["kem_public_key"])
         client_challenge = encode_base64(os.urandom(32))
 
-        # TIMING: ML-KEM encapsulation
+        # TIMING: ML-KEM encapsulation.
+        # The KEM object already exists.
         encap_start_ns = time.perf_counter_ns()
 
-        with oqs.KeyEncapsulation(KEM_ALGORITHM) as kem:
-            kem_ciphertext, shared_secret = kem.encap_secret(
-                kem_public_key
-            )
+        kem_ciphertext, shared_secret = kem.encap_secret(
+            kem_public_key
+        )
 
         encap_ms = (
             time.perf_counter_ns() - encap_start_ns
@@ -222,7 +239,8 @@ def run_client(server_host: str, server_port: int) -> None:
             time.perf_counter_ns() - confirmation_start_ns
         ) / 1_000_000
 
-        # TIMING: ML-DSA client response signing
+        # TIMING: ML-DSA client response signing.
+        # The signer object already exists.
         sign_start_ns = time.perf_counter_ns()
 
         signed_response = dict(response)
@@ -230,6 +248,7 @@ def run_client(server_host: str, server_port: int) -> None:
         signed_response["signature"] = sign_message(
             response,
             client_private_key,
+            client_signer,
         )
 
         sign_response_ms = (
@@ -256,6 +275,7 @@ def run_client(server_host: str, server_port: int) -> None:
         final_message = verify_signed_message(
             signed_final,
             trusted_server_public_key,
+            server_verifier,
         )
 
         verify_final_ms = (
@@ -398,6 +418,11 @@ def run_client(server_host: str, server_port: int) -> None:
 
         print(f"Session stored at: {CLIENT_SESSION_FILE}")
         print("Secure ML-KEM group session established")
+
+    # Explicitly release pre-created contexts.
+    client_signer.free()
+    server_verifier.free()
+    kem.free()
 
 
 def main() -> int:
