@@ -91,9 +91,6 @@ def run_client(server_host: str, server_port: int) -> None:
     print(f"Requesting GOOSE group: {GROUP_ID}")
     print(f"Member identity: {MEMBER_ID}")
 
-    # OPTIMISATION:
-    # Create reusable cryptographic contexts before
-    # the timed handshake begins.
     client_signer = oqs.Signature(
         SIGNATURE_ALGORITHM,
         client_private_key,
@@ -105,6 +102,12 @@ def run_client(server_host: str, server_port: int) -> None:
 
     kem = oqs.KeyEncapsulation(
         KEM_ALGORITHM
+    )
+
+    # HKDF WARM-UP
+    derive_session_material(
+        os.urandom(32),
+        os.urandom(32),
     )
 
     # TIMING: overall handshake begins immediately
@@ -166,8 +169,6 @@ def run_client(server_host: str, server_port: int) -> None:
         kem_public_key = decode_base64(offer["kem_public_key"])
         client_challenge = encode_base64(os.urandom(32))
 
-        # TIMING: ML-KEM encapsulation.
-        # The KEM object already exists.
         encap_start_ns = time.perf_counter_ns()
 
         kem_ciphertext, shared_secret = kem.encap_secret(
@@ -207,7 +208,6 @@ def run_client(server_host: str, server_port: int) -> None:
             time.perf_counter_ns() - transcript_start_ns
         ) / 1_000_000
 
-        # TIMING: HKDF
         hkdf_start_ns = time.perf_counter_ns()
 
         (
@@ -239,8 +239,6 @@ def run_client(server_host: str, server_port: int) -> None:
             time.perf_counter_ns() - confirmation_start_ns
         ) / 1_000_000
 
-        # TIMING: ML-DSA client response signing.
-        # The signer object already exists.
         sign_start_ns = time.perf_counter_ns()
 
         signed_response = dict(response)
@@ -419,7 +417,6 @@ def run_client(server_host: str, server_port: int) -> None:
         print(f"Session stored at: {CLIENT_SESSION_FILE}")
         print("Secure ML-KEM group session established")
 
-    # Explicitly release pre-created contexts.
     client_signer.free()
     server_verifier.free()
     kem.free()
