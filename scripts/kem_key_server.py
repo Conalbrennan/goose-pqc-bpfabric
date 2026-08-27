@@ -196,7 +196,7 @@ def derive_session_material(
 
     hkdf = HKDF(
         algorithm=hashes.SHA256(),
-        length=68,
+        length=60,
         salt=transcript_hash,
         info=b"goose-bpfabric-secure-kem-v1",
     )
@@ -204,9 +204,9 @@ def derive_session_material(
     derived_material = hkdf.derive(shared_secret)
 
     return (
-        derived_material[0:32],
-        derived_material[32:64],
-        derived_material[64:68],
+        derived_material[0:24],
+        derived_material[24:56],
+        derived_material[56:60],
     )
 
 
