@@ -154,7 +154,7 @@ nonce_prefix = base64.b64decode(
     session["nonce_prefix_b64"]
 )
 
-if len(aes_key) != 24:
+if len(aes_key) != 16:
     raise RuntimeError(
         "Expected a 192-bit AES key"
     )
