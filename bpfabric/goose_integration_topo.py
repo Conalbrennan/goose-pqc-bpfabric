@@ -53,7 +53,7 @@ class ThreeSwitchTopo(Topo):
             h_1_1,
             aggSwitch1,
             cls=TCLink,
-            bw=500
+            bw=100
         )
 
         # Connect the encryption edge switch to the core switch
@@ -61,7 +61,7 @@ class ThreeSwitchTopo(Topo):
             aggSwitch1,
             coreSwitch,
             cls=TCLink,
-            bw=500
+            bw=100
         )
 
         h_1_2 = self.addHost(
@@ -74,7 +74,7 @@ class ThreeSwitchTopo(Topo):
             h_1_2,
             aggSwitch1,
             cls=TCLink,
-            bw=500
+            bw=100
         )
 
         # Connect the decryption edge switch to the core switch
@@ -82,7 +82,7 @@ class ThreeSwitchTopo(Topo):
             aggSwitch2,
             coreSwitch,
             cls=TCLink,
-            bw=500
+            bw=100
         )
 
         # Receiver side hosts connected to the decryption edge switch
@@ -96,7 +96,7 @@ class ThreeSwitchTopo(Topo):
             h_2_1,
             aggSwitch2,
             cls=TCLink,
-            bw=500
+            bw=100
         )
 
         h_2_2 = self.addHost(
@@ -109,7 +109,7 @@ class ThreeSwitchTopo(Topo):
             h_2_2,
             aggSwitch2,
             cls=TCLink,
-            bw=500
+            bw=100
         )
 
 
