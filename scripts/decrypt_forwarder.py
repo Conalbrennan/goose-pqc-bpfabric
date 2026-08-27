@@ -9,6 +9,7 @@ import fcntl
 import json
 import os
 import struct
+import sys
 import time
 
 TAP_IN = "tap_dec_in"
@@ -33,6 +34,15 @@ IFF_NO_PI = 0x1000
 ETHERNET_HEADER_SIZE = 14
 COUNTER_SIZE = 8
 GCM_TAG_SIZE = 16
+
+# Run number must be supplied when starting the forwarder.
+if len(sys.argv) != 2:
+    raise RuntimeError(
+        "Run number required. "
+        "Example: sudo python3 decrypt_forwarder.py 1"
+    )
+
+RUN_NUMBER = int(sys.argv[1])
 
 # Store measurements in memory during the experiment.
 decryption_timings = []
@@ -102,21 +112,29 @@ def save_results():
         exist_ok=True
     )
 
+    file_exists = os.path.exists(RESULTS_FILE)
+    file_empty = (
+        not file_exists
+        or os.path.getsize(RESULTS_FILE) == 0
+    )
+
     with open(
         RESULTS_FILE,
-        "w",
+        "a",
         newline=""
     ) as csvfile:
 
         writer = csv.writer(csvfile)
 
-        writer.writerow(
-            [
-                "packet_counter",
-                "decrypt_time_ns",
-                "decrypt_time_us"
-            ]
-        )
+        if file_empty:
+            writer.writerow(
+                [
+                    "run",
+                    "packet",
+                    "decrypt_time_ns",
+                    "decrypt_time_us"
+                ]
+            )
 
         for (
             counter,
@@ -126,6 +144,7 @@ def save_results():
 
             writer.writerow(
                 [
+                    RUN_NUMBER,
                     counter,
                     decrypt_time_ns,
                     decrypt_time_us
@@ -154,7 +173,7 @@ nonce_prefix = base64.b64decode(
     session["nonce_prefix_b64"]
 )
 
-if len(aes_key) != 32:
+if len(aes_key) != 24:
     raise RuntimeError(
         "Expected a 192-bit AES key"
     )
@@ -176,6 +195,9 @@ tap_in_fd = open_tap(TAP_IN)
 tap_out_fd = open_tap(TAP_OUT)
 
 print("Decryption forwarder started")
+print(
+    f"Experimental run: {RUN_NUMBER}"
+)
 print(
     f"Reading encrypted GOOSE frames from {TAP_IN}"
 )
