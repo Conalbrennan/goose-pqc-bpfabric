@@ -17,7 +17,7 @@ import oqs
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-KEM_ALGORITHM = "ML-KEM-768"
+KEM_ALGORITHM = "ML-KEM-512"
 SIGNATURE_ALGORITHM = "ML-DSA-44"
 PROTOCOL_VERSION = 1
 
