@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 
+# Handles the per-packet decryption stage of the GOOSE protection pipeline.
+# Protected GOOSE frames are read from tap_dec_in, authenticated and decrypted
+# using the active session, then restored frames are written to tap_dec_out.
+
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.exceptions import InvalidTag
 
@@ -12,19 +16,20 @@ import struct
 import sys
 import time
 
+# Define TAP interfaces, GOOSE identification and session/result locations
 TAP_IN = "tap_dec_in"
 TAP_OUT = "tap_dec_out"
 
 GOOSE_ETHERTYPE = 0x88B8
 
 SESSION_FILE = (
-    "/home/student/goose-mininet/keys/"
-    "secure_kem/Server/active_session.json"
+"/home/student/goose-mininet/keys/"
+"secure_kem/Server/active_session.json"
 )
 
 RESULTS_FILE = (
-    "/home/student/goose-pqc-bpfabric/results/"
-    "aes_decrypt_times.csv"
+"/home/student/goose-pqc-bpfabric/results/"
+"aes_decrypt_times.csv"
 )
 
 TUNSETIFF = 0x400454CA
@@ -36,20 +41,21 @@ COUNTER_SIZE = 8
 GCM_TAG_SIZE = 16
 
 # Run number must be supplied when starting the forwarder.
+
 if len(sys.argv) != 2:
-    raise RuntimeError(
-        "Run number required. "
-        "Example: sudo python3 decrypt_forwarder.py 1"
-    )
+raise RuntimeError(
+"Run number required. "
+"Example: sudo python3 decrypt_forwarder.py 1"
+)
 
 RUN_NUMBER = int(sys.argv[1])
 
 # Store measurements in memory during the experiment.
+
 decryption_timings = []
 
-
+# Open an existing TAP interface for raw Ethernet frame input or output
 def open_tap(interface_name):
-
     tap_fd = os.open("/dev/net/tun", os.O_RDWR)
 
     interface_request = struct.pack(
@@ -66,9 +72,8 @@ def open_tap(interface_name):
 
     return tap_fd
 
-
+# Identify GOOSE frames and reconstruct the same authenticated metadata used during encryption
 def get_ethertype(frame_data):
-
     if len(frame_data) < ETHERNET_HEADER_SIZE:
         return None
 
@@ -77,9 +82,7 @@ def get_ethertype(frame_data):
         frame_data[12:14]
     )[0]
 
-
 def build_aad(session):
-
     required_fields = (
         "group_id",
         "key_id",
@@ -104,9 +107,8 @@ def build_aad(session):
         separators=(",", ":")
     ).encode("utf-8")
 
-
+# Save per-packet AES-GCM decryption timings for later performance analysis
 def save_results():
-
     os.makedirs(
         os.path.dirname(RESULTS_FILE),
         exist_ok=True
@@ -156,39 +158,41 @@ def save_results():
         f"{RESULTS_FILE}"
     )
 
-
+# Load and validate the active authenticated session established by the KEM exchange
 with open(SESSION_FILE, "r") as session_file:
-    session = json.load(session_file)
+session = json.load(session_file)
 
 if session.get("status") != "ACTIVE":
-    raise RuntimeError(
-        "No active authenticated KEM session"
-    )
+raise RuntimeError(
+"No active authenticated KEM session"
+)
 
 aes_key = base64.b64decode(
-    session["aes_key_b64"]
+session["aes_key_b64"]
 )
 
 nonce_prefix = base64.b64decode(
-    session["nonce_prefix_b64"]
+session["nonce_prefix_b64"]
 )
 
 if len(aes_key) != 24:
-    raise RuntimeError(
-        "Expected a 192-bit AES key"
-    )
+raise RuntimeError(
+"Expected a 192-bit AES key"
+)
 
 if len(nonce_prefix) != 4:
-    raise RuntimeError(
-        "Expected a 4-byte nonce prefix"
-    )
+raise RuntimeError(
+"Expected a 4-byte nonce prefix"
+)
 
 aad = build_aad(session)
 
 aesgcm = AESGCM(aes_key)
 
 # Counter is marked as used only after
+
 # successful authentication/decryption.
+
 seen_counters = set()
 
 tap_in_fd = open_tap(TAP_IN)
@@ -196,193 +200,189 @@ tap_out_fd = open_tap(TAP_OUT)
 
 print("Decryption forwarder started")
 print(
-    f"Experimental run: {RUN_NUMBER}"
+f"Experimental run: {RUN_NUMBER}"
 )
 print(
-    f"Reading encrypted GOOSE frames from {TAP_IN}"
+f"Reading encrypted GOOSE frames from {TAP_IN}"
 )
 print(
-    f"Writing decrypted GOOSE frames to {TAP_OUT}"
+f"Writing decrypted GOOSE frames to {TAP_OUT}"
 )
 print(
-    f"GOOSE group: {session['group_id']}"
+f"GOOSE group: {session['group_id']}"
 )
 print(
-    f"Key ID: {session['key_id']}"
+f"Key ID: {session['key_id']}"
 )
 print(
-    f"Key version: {session['key_version']}"
+f"Key version: {session['key_version']}"
 )
 print(
-    f"Timing results will be saved to "
-    f"{RESULTS_FILE}"
+f"Timing results will be saved to "
+f"{RESULTS_FILE}"
 )
 print(
-    "Raw-byte forwarding enabled "
-    "(Scapy removed from packet path)"
+"Raw-byte forwarding enabled "
+"(Scapy removed from packet path)"
 )
 
+# Process each protected GOOSE frame, reject replays and authenticate before forwarding
 try:
-    while True:
+while True:
 
-        frame_data = os.read(
-            tap_in_fd,
-            65535
-        )
-
-        # Ignore malformed Ethernet frames.
-        if len(frame_data) < ETHERNET_HEADER_SIZE:
-            continue
-
-        ethertype = get_ethertype(frame_data)
-
-        if ethertype != GOOSE_ETHERTYPE:
-            continue
-
-        # Preserve the original Ethernet header exactly.
-        ethernet_header = (
-            frame_data[:ETHERNET_HEADER_SIZE]
-        )
-
-        # The encrypted body contains:
-        #
-        # 8-byte counter
-        # +
-        # AES-GCM ciphertext
-        # +
-        # 16-byte authentication tag
-        encrypted_blob = (
-            frame_data[ETHERNET_HEADER_SIZE:]
-        )
-
-        minimum_length = (
-            COUNTER_SIZE
-            + GCM_TAG_SIZE
-            + 1
-        )
-
-        if len(encrypted_blob) < minimum_length:
-            print(
-                "Rejected encrypted frame: "
-                "payload too short"
-            )
-            continue
-
-        counter_bytes = (
-            encrypted_blob[:COUNTER_SIZE]
-        )
-
-        encrypted_payload = (
-            encrypted_blob[COUNTER_SIZE:]
-        )
-
-        packet_counter = int.from_bytes(
-            counter_bytes,
-            byteorder="big"
-        )
-
-        if packet_counter == 0:
-            print(
-                "Rejected encrypted frame: "
-                "invalid packet counter"
-            )
-            continue
-
-        if packet_counter in seen_counters:
-            print(
-                "Rejected replayed frame: "
-                f"counter={packet_counter}"
-            )
-            continue
-
-        nonce = (
-            nonce_prefix
-            + counter_bytes
-        )
-
-        try:
-
-            # Measure ONLY AES-GCM decryption.
-            decrypt_start_ns = time.perf_counter_ns()
-
-            decrypted_payload = aesgcm.decrypt(
-                nonce,
-                encrypted_payload,
-                aad
-            )
-
-            decrypt_end_ns = time.perf_counter_ns()
-
-            decrypt_time_ns = (
-                decrypt_end_ns
-                - decrypt_start_ns
-            )
-
-            decrypt_time_us = (
-                decrypt_time_ns / 1000.0
-            )
-
-        except InvalidTag:
-            print(
-                "Rejected encrypted frame: "
-                "AES-GCM authentication failed"
-            )
-            continue
-
-        except Exception as error:
-            print(
-                f"Decryption failed: {error}"
-            )
-            continue
-
-        decryption_timings.append(
-            (
-                packet_counter,
-                decrypt_time_ns,
-                decrypt_time_us
-            )
-        )
-
-        # Mark counter used only after
-        # successful authentication.
-        seen_counters.add(
-            packet_counter
-        )
-
-        # Restore the original Ethernet frame directly.
-        # No Scapy packet reconstruction is performed.
-        decrypted_frame = (
-            ethernet_header
-            + decrypted_payload
-        )
-
-        os.write(
-            tap_out_fd,
-            decrypted_frame
-        )
-
-        # Limit terminal output during large tests.
-        if (
-            packet_counter <= 5
-            or packet_counter % 100 == 0
-        ):
-            print(
-                "Decrypted frame, "
-                f"counter={packet_counter}, "
-                f"AES_decrypt="
-                f"{decrypt_time_ns} ns "
-                f"({decrypt_time_us:.3f} us)"
-            )
-
-except KeyboardInterrupt:
-    print(
-        "\nDecryption forwarder stopped"
+    frame_data = os.read(
+        tap_in_fd,
+        65535
     )
 
+    # Ignore malformed Ethernet frames.
+    if len(frame_data) < ETHERNET_HEADER_SIZE:
+        continue
+
+    ethertype = get_ethertype(frame_data)
+
+    if ethertype != GOOSE_ETHERTYPE:
+        continue
+
+    # Preserve the original Ethernet header exactly.
+    ethernet_header = (
+        frame_data[:ETHERNET_HEADER_SIZE]
+    )
+
+    # The encrypted body contains: 8-byte counter + AES-GCM ciphertext + 16-byte authentication tag
+    encrypted_blob = (
+        frame_data[ETHERNET_HEADER_SIZE:]
+    )
+
+    minimum_length = (
+        COUNTER_SIZE
+        + GCM_TAG_SIZE
+        + 1
+    )
+
+    if len(encrypted_blob) < minimum_length:
+        print(
+            "Rejected encrypted frame: "
+            "payload too short"
+        )
+        continue
+
+    counter_bytes = (
+        encrypted_blob[:COUNTER_SIZE]
+    )
+
+    encrypted_payload = (
+        encrypted_blob[COUNTER_SIZE:]
+    )
+
+    packet_counter = int.from_bytes(
+        counter_bytes,
+        byteorder="big"
+    )
+
+    if packet_counter == 0:
+        print(
+            "Rejected encrypted frame: "
+            "invalid packet counter"
+        )
+        continue
+
+    if packet_counter in seen_counters:
+        print(
+            "Rejected replayed frame: "
+            f"counter={packet_counter}"
+        )
+        continue
+
+    nonce = (
+        nonce_prefix
+        + counter_bytes
+    )
+
+    # Authenticate and decrypt the protected payload using the reconstructed nonce and AAD
+    try:
+
+        # Measure ONLY AES-GCM decryption.
+        decrypt_start_ns = time.perf_counter_ns()
+
+        decrypted_payload = aesgcm.decrypt(
+            nonce,
+            encrypted_payload,
+            aad
+        )
+
+        decrypt_end_ns = time.perf_counter_ns()
+
+        decrypt_time_ns = (
+            decrypt_end_ns
+            - decrypt_start_ns
+        )
+
+        decrypt_time_us = (
+            decrypt_time_ns / 1000.0
+        )
+
+    except InvalidTag:
+        print(
+            "Rejected encrypted frame: "
+            "AES-GCM authentication failed"
+        )
+        continue
+
+    except Exception as error:
+        print(
+            f"Decryption failed: {error}"
+        )
+        continue
+
+    decryption_timings.append(
+        (
+            packet_counter,
+            decrypt_time_ns,
+            decrypt_time_us
+        )
+    )
+
+    # Mark counter used only after successful authentication.
+    seen_counters.add(
+        packet_counter
+    )
+
+    # Restore the original Ethernet frame directly.
+    # No Scapy packet reconstruction is performed.
+    decrypted_frame = (
+        ethernet_header
+        + decrypted_payload
+    )
+
+    os.write(
+        tap_out_fd,
+        decrypted_frame
+    )
+
+    # Limit terminal output during large tests.
+    if (
+        packet_counter <= 5
+        or packet_counter % 100 == 0
+    ):
+        print(
+            "Decrypted frame, "
+            f"counter={packet_counter}, "
+            f"AES_decrypt="
+            f"{decrypt_time_ns} ns "
+            f"({decrypt_time_us:.3f} us)"
+        )
+
+except KeyboardInterrupt:
+print(
+"\nDecryption forwarder stopped"
+)
+
+# Persist collected measurements and close the TAP interfaces on shutdown
 finally:
 
-    if decryption_timings:
-        save_results()
+if decryption_timings:
+    save_results()
 
-    os.close(tap_in_fd)
-    os.close(tap_out_fd)
+os.close(tap_in_fd)
+os.close(tap_out_fd)
