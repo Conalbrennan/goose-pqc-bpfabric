@@ -1,4 +1,7 @@
 #!/usr/bin/env python
+#Defines the Mininet/BPFabric topology used for the GOOSE security experiment.
+#The topology connects the sender and receiver networks through three BPFabric switches
+#and attaches TAP interfaces for user-space encryption and decryption.
 
 from mininet.net import Mininet
 from mininet.topo import Topo
@@ -9,40 +12,38 @@ from eBPFSwitch import eBPFSwitch, eBPFHost
 
 import subprocess
 
-# Map each TAP interface to the BPFabric edge switch,
-# the encryption pair is attached to s2 and decryption pair to s3
+#Map each TAP interface to the BPFabric edge switch, the encryption pair is attached to s2 and decryption pair to s3
 TAP_INTERFACES = [
-    ("tap_enc_in", "s2"),
-    ("tap_enc_out", "s2"),
-    ("tap_dec_in", "s3"),
-    ("tap_dec_out", "s3"),
+("tap_enc_in", "s2"),
+("tap_enc_out", "s2"),
+("tap_dec_in", "s3"),
+("tap_dec_out", "s3"),
 ]
 
-# Define the three switch topology
+#Define the three switch topology
 class ThreeSwitchTopo(Topo):
-
     def __init__(self, **opts):
         Topo.__init__(self, **opts)
 
-        # Core forwarding switch
+        #Core forwarding switch
         coreSwitch = self.addSwitch(
             "s1",
             switch_path="../softswitch/softswitch"
         )
 
-        # Encryption side edge switch
+        #Encryption side edge switch
         aggSwitch1 = self.addSwitch(
             "s2",
             switch_path="../softswitch/softswitch"
         )
 
-        # Decryption side edge switch
+        #Decryption side edge switch
         aggSwitch2 = self.addSwitch(
             "s3",
             switch_path="../softswitch/softswitch"
         )
 
-        # Sender side hosts connected to the encryption edge switch
+        #Sender side hosts connected to the encryption edge switch
         h_1_1 = self.addHost(
             "h_1_1",
             ip="10.0.1.1/8",
@@ -56,7 +57,7 @@ class ThreeSwitchTopo(Topo):
             bw=100
         )
 
-        # Connect the encryption edge switch to the core switch
+        #Connect the encryption edge switch to the core switch
         self.addLink(
             aggSwitch1,
             coreSwitch,
@@ -77,7 +78,7 @@ class ThreeSwitchTopo(Topo):
             bw=100
         )
 
-        # Connect the decryption edge switch to the core switch
+        #Connect the decryption edge switch to the core switch
         self.addLink(
             aggSwitch2,
             coreSwitch,
@@ -85,7 +86,7 @@ class ThreeSwitchTopo(Topo):
             bw=100
         )
 
-        # Receiver side hosts connected to the decryption edge switch
+        #Receiver side hosts connected to the decryption edge switch
         h_2_1 = self.addHost(
             "h_2_1",
             ip="10.0.2.1/8",
@@ -112,9 +113,9 @@ class ThreeSwitchTopo(Topo):
             bw=100
         )
 
-
+#Create each Linux TAP interface and attach it to the appropriate BPFabric edge switch
 def create_tap(name, switch):
-    # Remove a stale interface left by an earlier run
+    #Remove a stale interface left by an earlier run
     subprocess.run(
         ["ip", "tuntap", "del", "dev", name, "mode", "tap"],
         stdout=subprocess.DEVNULL,
@@ -134,8 +135,7 @@ def create_tap(name, switch):
         ["ip", "link", "set", "dev", name, "up"]
     )
 
-    # Register the TAP device as a Mininet interface
-    # on the selected switch
+    #Register the TAP device as a Mininet interface on the selected switch
     Intf(name, node=switch)
 
     print(
@@ -145,7 +145,7 @@ def create_tap(name, switch):
         )
     )
 
-
+#Remove experiment-specific TAP interfaces during network shutdown
 def delete_tap(name):
     """
     Remove a TAP interface when Mininet stops
@@ -157,12 +157,11 @@ def delete_tap(name):
         stderr=subprocess.DEVNULL
     )
 
-
+#Build the topology, attach the TAP interfaces and run the interactive Mininet environment
 def main():
     topo = ThreeSwitchTopo()
 
-    # Create the Mininet network using the
-    # BPFabric host and switch classes
+    #Create the Mininet network using the BPFabric host and switch classes
     net = Mininet(
         topo=topo,
         host=eBPFHost,
@@ -170,8 +169,7 @@ def main():
         controller=None
     )
 
-    # Create and attach the encryption side
-    # and decryption side TAP interfaces
+    #Create and attach the encryption side and decryption side TAP interfaces
     try:
         for tap_name, switch_name in TAP_INTERFACES:
             create_tap(
@@ -187,7 +185,6 @@ def main():
 
         for tap_name, switch_name in TAP_INTERFACES:
             delete_tap(tap_name)
-
 
 if __name__ == "__main__":
     main()
