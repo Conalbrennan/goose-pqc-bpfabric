@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 
+# Receives restored GOOSE frames at h_2_1, validates the expected test payload,
+# calculates end-to-end latency from the embedded sender timestamp,
+# and records the results for later experimental analysis.
+
 from scapy.all import sniff, Ether, Raw
 
 import argparse
@@ -8,21 +12,21 @@ import hashlib
 import os
 import time
 
+# Define the receiver interface, GOOSE EtherType and default results location
 IN_IFACE = "h_2_1-eth0"
 GOOSE_ETHERTYPE = 0x88B8
 
 DEFAULT_OUTPUT_FILE = (
-    "/home/student/goose-pqc-bpfabric/"
-    "results/latency_results.csv"
+"/home/student/goose-pqc-bpfabric/"
+"results/latency_results.csv"
 )
 
 received_count = 0
 target_count = 0
 output_file = ""
 
-
+# Parse the semicolon-separated test payload and validate the required GOOSE fields
 def parse_payload(payload_text):
-
     fields = {}
 
     for part in payload_text.split(";"):
@@ -32,9 +36,7 @@ def parse_payload(payload_text):
 
     return fields
 
-
 def validate_payload(fields):
-
     required_fields = [
         "app_id",
         "gocb_ref",
@@ -58,9 +60,8 @@ def validate_payload(fields):
 
     return True
 
-
+# Process each received GOOSE frame, calculate latency, validate the payload and log the result
 def handle_packet(packet):
-
     global received_count
 
     if not (
@@ -167,9 +168,8 @@ def handle_packet(packet):
     if received_count >= target_count:
         raise KeyboardInterrupt
 
-
+# Configure the experiment, create a fresh CSV results file and start packet capture
 def main():
-
     global target_count
     global output_file
 
@@ -263,7 +263,6 @@ def main():
             f"Results saved to: "
             f"{output_file}"
         )
-
 
 if __name__ == "__main__":
     main()
