@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 
+# Generates controlled IEC 61850 GOOSE test traffic for the experiment.
+# Frames are sent from h_1_1 with predictable sequence values and timestamps
+# so end-to-end forwarding and latency behaviour can be validated.
+
 from scapy.all import Ether, Raw, sendp
 
 import argparse
 import time
 
+# Define the sender interface, Ethernet addressing and fixed GOOSE test fields
 INTERFACE = "h_1_1-eth0"
 DEST_MAC = "01:0c:cd:01:00:00"
 SRC_MAC = "00:00:00:00:00:01"
@@ -16,9 +21,8 @@ DATASET = "IED1/LLN0$Dataset01"
 ST_NUM = 1
 STATUS = "NORMAL"
 
-
+# Parse experiment parameters and transmit the requested sequence of GOOSE frames
 def main():
-
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
@@ -49,14 +53,13 @@ def main():
 
     for sq_num in range(1, args.count + 1):
 
-        # High-resolution monotonic timestamp used
-        # for experimental latency measurement.
+        # High-resolution monotonic timestamp used for experimental latency measurement.
         send_time_ns = time.perf_counter_ns()
 
-        # Retain a conventional timestamp as part
-        # of the existing test payload.
+        # Retain a conventional timestamp as part of the existing test payload.
         timestamp = time.time()
 
+        # Build a predictable payload containing the sequence and timing values used for validation
         payload = (
             f"app_id={APP_ID};"
             f"gocb_ref={GOCB_REF};"
@@ -97,7 +100,6 @@ def main():
             time.sleep(args.interval)
 
     print("Finished sending frames")
-
 
 if __name__ == "__main__":
     main()
