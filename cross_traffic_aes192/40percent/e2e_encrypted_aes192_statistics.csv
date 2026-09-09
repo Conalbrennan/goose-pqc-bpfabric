@@ -1,0 +1,2 @@
+source_file,n,mean_ms,median_ms,sd_ms,min_ms,max_ms,p95_ms,p99_ms,sent,received,lost,packet_loss_percent
+e2e_encrypted_aes192.csv,5000,1.255910,1.163006,0.484147,0.358820,7.416010,2.071905,2.551808,5000,5000,0,0.000
